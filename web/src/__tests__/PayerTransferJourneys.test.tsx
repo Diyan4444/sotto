@@ -94,6 +94,46 @@ describe("payer transfer journeys", () => {
     expect(view.container).toBeEmptyDOMElement();
   });
 
+
+  it("shows Declining while a decline request is in progress", async () => {
+    let resolveDecline!: (value: api.PayerTransfer) => void;
+
+    vi.mocked(api.withdrawPayerTransfer).mockReturnValue(
+      new Promise((resolve) => {
+        resolveDecline = resolve;
+      }),
+    );
+    vi.mocked(api.fetchPayerTransfers).mockResolvedValue({
+      transfers: [transfer()],
+      nextCursor: null,
+    });
+    render(<PayerTransferInbox />);
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Decline request" }),
+    );
+    expect(api.withdrawPayerTransfer).toHaveBeenCalledWith("transfer-1");
+    expect(
+      screen.getByRole("button", { name: "Declining…" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Accepting…" }),
+    ).not.toBeInTheDocument();
+    await act(async () => {
+      resolveDecline(
+        transfer({
+          state: "failed",
+          resultCode: "consent_withdrawn",
+        }),
+      );
+    });
+    await waitFor(() => {
+      expect(
+        screen.queryByRole("button", { name: "Declining…" }),
+      ).not.toBeInTheDocument();
+    });
+  });
+
+
   it("lets the named counterparty accept an incoming invitation without claiming it is complete", async () => {
     vi.mocked(api.fetchPayerTransfers)
       .mockResolvedValueOnce({ transfers: [transfer()], nextCursor: null })
