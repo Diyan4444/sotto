@@ -133,6 +133,76 @@ describe("payer transfer journeys", () => {
     });
   });
 
+  
+  it("clears the decline label after a failed request and successful recovery refresh", async () => {
+    let rejectDecline!: (error: Error) => void;
+
+    vi.mocked(api.withdrawPayerTransfer).mockReturnValue(
+      new Promise((_, reject) => {
+        rejectDecline = reject;
+      }),
+    );
+    vi.mocked(api.fetchPayerTransfers).mockResolvedValue({
+      transfers: [transfer()],
+      nextCursor: null,
+    });
+    vi.mocked(api.fetchPayerTransfer).mockResolvedValue(
+      transfer({ state: "awaiting_consent" }),
+    );
+    render(<PayerTransferInbox />);
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Decline request" }),
+    );
+    expect(
+      screen.getByRole("button", { name: "Declining…" }),
+    ).toBeInTheDocument();
+    await act(async () => {
+      rejectDecline(new Error("server error (503)"));
+    });
+    await waitFor(() => {
+      expect(api.fetchPayerTransfer).toHaveBeenCalledWith("transfer-1");
+      expect(screen.getByRole("button", { name: "Accept transfer request" })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Decline request" })).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "Declining…" })).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "Accepting…" })).not.toBeInTheDocument();
+    });
+    expect(api.acceptPayerTransfer).not.toHaveBeenCalled();
+  });
+
+
+  it("shows Accepting while an acceptance request is in progress", async () => {
+    let resolveAccept!: (value: api.PayerTransfer) => void;
+
+    vi.mocked(api.acceptPayerTransfer).mockReturnValue(
+      new Promise((resolve) => {
+        resolveAccept = resolve;
+      }),
+    );
+    vi.mocked(api.fetchPayerTransfers).mockResolvedValue({
+      transfers: [transfer()],
+      nextCursor: null,
+    });
+    render(<PayerTransferInbox />);
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Accept transfer request" }),
+    );
+    expect(api.acceptPayerTransfer).toHaveBeenCalledWith("transfer-1");
+    expect(
+      screen.getByRole("button", { name: "Accepting…" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Declining…" }),
+    ).not.toBeInTheDocument();
+    await act(async () => {
+      resolveAccept(transfer({ state: "pending" }));
+    });
+    await waitFor(() => {
+      expect(
+        screen.queryByRole("button", { name: "Accepting…" }),
+      ).not.toBeInTheDocument();
+    });
+  });
+
 
   it("lets the named counterparty accept an incoming invitation without claiming it is complete", async () => {
     vi.mocked(api.fetchPayerTransfers)
