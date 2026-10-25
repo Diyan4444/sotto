@@ -184,7 +184,7 @@ fn config() -> StripeCoverageConfig {
 }
 
 fn account() -> Value {
-    json!({"id":"acct_test_transport","object":"account","livemode":false})
+    json!({"id":"acct_test_transport","object":"account"})
 }
 
 fn monthly_price() -> Value {
@@ -1564,8 +1564,13 @@ async fn bounded_subscription_invoice_reads_stop_before_fetching_unbounded_histo
         .unwrap()
         .iter()
         .filter(|call| call.path_and_query.starts_with("/v1/invoices?"))
-        .count();
-    assert_eq!(invoice_calls, 1);
+        .cloned()
+        .collect::<Vec<_>>();
+    assert_eq!(invoice_calls.len(), 1);
+    assert!(query_pairs(&invoice_calls[0]).contains(&(
+        "expand[]".to_owned(),
+        "data.amount_paid_off_stripe".to_owned()
+    )));
 }
 
 #[tokio::test]
@@ -1675,7 +1680,22 @@ async fn collects_all_personal_invoices_under_one_session_and_keeps_non_paid_sta
             && call.path_and_query.contains("customer=cus_1")));
     assert!(invoice_list_calls
         .iter()
+        .all(|call| query_pairs(call).contains(&(
+            "expand[]".to_owned(),
+            "data.amount_paid_off_stripe".to_owned()
+        ))));
+    assert!(invoice_list_calls
+        .iter()
         .any(|call| call.path_and_query.contains("starting_after=in_2")));
+    let invoice_detail_calls: Vec<_> = calls
+        .iter()
+        .filter(|call| call.path_and_query.starts_with("/v1/invoices/in_1?"))
+        .collect();
+    assert_eq!(invoice_detail_calls.len(), 1);
+    assert_eq!(
+        query_pairs(invoice_detail_calls[0]),
+        vec![("expand[]".to_owned(), "amount_paid_off_stripe".to_owned())]
+    );
 }
 
 #[tokio::test]
@@ -2257,12 +2277,12 @@ async fn invoice_history_wraps_later_correction_uncertainty_without_a_paid_subse
 }
 
 #[tokio::test]
-async fn rejects_wrong_account_mode_redirect_and_invalid_pagination() {
+async fn rejects_wrong_account_key_mode_redirect_and_invalid_pagination() {
     let mut responses = HashMap::new();
     responses.insert(
         "/v1/account".into(),
         vec![MockResponse::json(
-            json!({"id":"acct_other","livemode":false}),
+            json!({"id":"acct_other","object":"account"}),
         )],
     );
     let server = mock_server(responses).await;
@@ -2274,21 +2294,28 @@ async fn rejects_wrong_account_mode_redirect_and_invalid_pagination() {
         Err(StripeReadError::AccountMismatch)
     ));
 
+    let server = mock_server(HashMap::new()).await;
+    let live_config = StripeCoverageConfig::new(
+        "acct_test_transport",
+        ProviderEnvironment::Live,
+        "price_month",
+        "price_year",
+    )
+    .unwrap();
+    assert!(matches!(
+        StripeReadClient::for_test(API_KEY, &live_config, server.origin.clone(), limits()),
+        Err(StripeReadError::InvalidConfig("Stripe API key environment"))
+    ));
+
     let mut responses = HashMap::new();
-    responses.insert(
-        "/v1/account".into(),
-        vec![MockResponse::json(
-            json!({"id":"acct_test_transport","livemode":true}),
-        )],
-    );
+    responses.insert("/v1/account".into(), vec![MockResponse::json(account())]);
     let server = mock_server(responses).await;
     let client =
         StripeReadClient::for_test(API_KEY, &config(), server.origin.clone(), limits()).unwrap();
     let mut session = client.session();
-    assert!(matches!(
-        client.account(&mut session).await,
-        Err(StripeReadError::ContextMismatch)
-    ));
+    let account_resource = client.account(&mut session).await.unwrap();
+    assert_eq!(account_resource.id, "acct_test_transport");
+    assert!(!account_resource.livemode);
 
     let mut responses = HashMap::new();
     responses.insert(
